@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, ConcatDataset
 
-from src.constants import (
+from constants import (
     NUM_FEATURES,
     SEMANTICKITTI_REMAP,
     TORONTO3D_REMAP,
