@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.constants import NUM_CLASSES, NUM_FEATURES
+from constants import NUM_CLASSES, NUM_FEATURES
 
 
 # ---------------------------------------------------------------------------
