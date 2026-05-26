@@ -18,7 +18,7 @@ import laspy
 import numpy as np
 import open3d as o3d
 
-from src.constants import (
+from constants import (
     FEATURE_NAMES,
     KNN_NEIGHBOURS,
     NUM_FEATURES,
@@ -118,7 +118,7 @@ def save_labelled_las(
     xyz_scale: float = 1.0,
 ) -> None:
     """Write a labelled point cloud to .las for CloudCompare QA."""
-    from src.constants import CLASS_COLOURS
+    from constants import CLASS_COLOURS
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
