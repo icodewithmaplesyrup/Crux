@@ -1,3 +1,8 @@
+So far, this repo includes Pipeline A and all versions of the GDD(vo.1-v0.3)
+
+
+
+
 # Crux — Pipeline A: 3D Semantic Segmentation
 
 Drone LIDAR point cloud → per-point material labels → surface region polygons → Unreal 5 material assignment.
