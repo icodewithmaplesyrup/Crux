@@ -2,6 +2,8 @@
 #include "GameFramework/Character.h"
 #include "Components/CapsuleComponent.h"
 #include "DrawDebugHelpers.h" // Remove in shipping — used for wall-run trace visualization
+#include "Engine/World.h"
+#include "TimerManager.h"
 
 // ============================================================================
 //  THE MOMENTUM → MOVEMENT LINK, EXPLAINED IN CODE
@@ -84,6 +86,7 @@ void UCruxCharacterMovementComponent::PhysCustom(float DeltaTime, int32 Iteratio
         case CMOVE_Slide:    PhysSlide(DeltaTime);    break;
         case CMOVE_WallRun:  PhysWallRun(DeltaTime);  break;
         case CMOVE_Wingsuit: PhysWingsuit(DeltaTime); break;
+        case CMOVE_Mantle:   PhysMantle(DeltaTime);   break;
         default: break;
     }
 
@@ -120,7 +123,7 @@ void UCruxCharacterMovementComponent::PhysSlide(float DeltaTime)
     // ── 1. Get the slope normal so we can factor gravity into the slide ──────
     FHitResult FloorHit;
     const FVector TraceStart = UpdatedComponent->GetComponentLocation();
-    const FVector TraceEnd   = TraceStart - FVector(0, 0, 20.f);
+    const FVector TraceEnd   = TraceStart - FVector(0, 0, SlideFloorTraceLength);
 
     GetWorld()->LineTraceSingleByChannel(FloorHit, TraceStart, TraceEnd,
         ECC_WorldStatic);
@@ -226,7 +229,7 @@ bool UCruxCharacterMovementComponent::TryStartWallRun()
         {
             // Make sure the surface is roughly vertical (not a floor or ceiling)
             const float WallDot = FVector::DotProduct(Hit.Normal, FVector::UpVector);
-            if (FMath::Abs(WallDot) < 0.3f) // Within ~17° of vertical
+            if (FMath::Abs(WallDot) < WallRunMaxFloorAngleDot) // Within ~17° of vertical
             {
                 WallRunNormal  = Hit.Normal;
                 bIsWallRunning = true;
@@ -351,8 +354,8 @@ bool UCruxCharacterMovementComponent::TryMantle()
     // ── Begin mantle ─────────────────────────────────────────────────────────
     MantleTarget = LedgeSurface;
     bIsMantling  = true;
-    SetCustomMode(CMOVE_WallRun); // Temporarily disable gravity during mantle
-    // Note: We handle the lerp in PhysMantle, called from TickComponent
+    SetCustomMode(CMOVE_Mantle);
+    // Note: We handle the lerp in PhysMantle through PhysCustom dispatch.
 
     return true;
 }
@@ -403,13 +406,15 @@ void UCruxCharacterMovementComponent::FireMicroCharge(bool bHeld)
     // We do this by briefly zeroing AirControl
     if (bHeld)
     {
+        AirControlBeforeMicroCharge = AirControl;
         AirControl = 0.f;
-        // Re-enable after a short delay — use a timer
+
+        // Re-enable after a short delay through a tracked, UObject-safe timer.
         GetWorld()->GetTimerManager().SetTimer(
-            // TimerHandle would be a declared member in a full implementation
-            FTimerHandle{},
-            [this]() { AirControl = 0.6f; },
-            0.4f,
+            MicroChargeTimerHandle,
+            this,
+            &UCruxCharacterMovementComponent::ResetAirControl,
+            MicroChargeAirControlLockDuration,
             false
         );
     }
@@ -441,8 +446,9 @@ void UCruxCharacterMovementComponent::PhysWingsuit(float DeltaTime)
         const float DiveSpeed    = FMath::Abs(Velocity.Z);
         const FVector ForwardDir = UpdatedComponent->GetForwardVector().GetSafeNormal2D();
 
-        Velocity   += ForwardDir * DiveSpeed * 0.4f; // 40% of dive → forward
-        Velocity.Z *= 0.6f;                          // Partially kill the dive
+        const float ClampedDiveTransferRate = FMath::Clamp(WingsuitDiveTransferRate, 0.f, 1.f);
+        Velocity   += ForwardDir * DiveSpeed * ClampedDiveTransferRate;
+        Velocity.Z *= 1.f - ClampedDiveTransferRate;
     }
 
     // Apply very low gravity
@@ -515,19 +521,144 @@ void UCruxCharacterMovementComponent::OnMovementModeChanged(
 {
     Super::OnMovementModeChanged(PreviousMovementMode, PreviousCustomMode);
 
+    if (GetWorld() && GetWorld()->GetTimerManager().IsTimerActive(MicroChargeTimerHandle))
+    {
+        GetWorld()->GetTimerManager().ClearTimer(MicroChargeTimerHandle);
+        ResetAirControl();
+    }
+
     // Clean up state flags when leaving custom modes
     if (PreviousMovementMode == MOVE_Custom)
     {
-        if (PreviousCustomMode == CMOVE_Slide)    bIsSliding     = false;
-        if (PreviousCustomMode == CMOVE_WallRun)  bIsWallRunning = false;
+        if (PreviousCustomMode == CMOVE_Slide)    bIsSliding      = false;
+        if (PreviousCustomMode == CMOVE_WallRun)  bIsWallRunning  = false;
         if (PreviousCustomMode == CMOVE_Wingsuit) bWingsuitActive = false;
+        if (PreviousCustomMode == CMOVE_Mantle)   bIsMantling     = false;
     }
+}
+
+void UCruxCharacterMovementComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    if (GetWorld())
+    {
+        GetWorld()->GetTimerManager().ClearTimer(MicroChargeTimerHandle);
+    }
+
+    Super::EndPlay(EndPlayReason);
 }
 
 float UCruxCharacterMovementComponent::GetMaxSpeed() const
 {
-    if (bIsSliding)    return 1600.f; // Slides can go fast
-    if (bIsWallRunning) return 1200.f;
+    if (bIsSliding)     return MaxSlideSpeed;
+    if (bIsWallRunning) return MaxWallRunSpeed;
     if (bWingsuitActive) return WingsuitMaxGlideSpeed;
     return Super::GetMaxSpeed();
+}
+
+void UCruxCharacterMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
+{
+    Super::UpdateFromCompressedFlags(Flags);
+
+    bIsSliding      = (Flags & FSavedMove_Character::FLAG_Custom_0) != 0;
+    bIsWallRunning  = (Flags & FSavedMove_Character::FLAG_Custom_1) != 0;
+    bWingsuitActive = (Flags & FSavedMove_Character::FLAG_Custom_2) != 0;
+    bIsMantling     = (Flags & FSavedMove_Character::FLAG_Custom_3) != 0;
+}
+
+FNetworkPredictionData_Client* UCruxCharacterMovementComponent::GetPredictionData_Client() const
+{
+    check(PawnOwner != nullptr);
+
+    if (ClientPredictionData == nullptr)
+    {
+        UCruxCharacterMovementComponent* MutableThis = const_cast<UCruxCharacterMovementComponent*>(this);
+        MutableThis->ClientPredictionData = new FNetworkPredictionData_Client_Crux(*this);
+    }
+
+    return ClientPredictionData;
+}
+
+void UCruxCharacterMovementComponent::ResetAirControl()
+{
+    AirControl = AirControlBeforeMicroCharge;
+}
+
+FSavedMove_Crux::FSavedMove_Crux()
+{
+    Clear();
+}
+
+void FSavedMove_Crux::Clear()
+{
+    Super::Clear();
+
+    bSavedIsSliding = false;
+    bSavedIsWallRunning = false;
+    bSavedWingsuitActive = false;
+    bSavedIsMantling = false;
+    SavedCustomMovementMode = CMOVE_MAX;
+}
+
+uint8 FSavedMove_Crux::GetCompressedFlags() const
+{
+    uint8 Result = Super::GetCompressedFlags();
+
+    if (bSavedIsSliding)      Result |= FLAG_Custom_0;
+    if (bSavedIsWallRunning)  Result |= FLAG_Custom_1;
+    if (bSavedWingsuitActive) Result |= FLAG_Custom_2;
+    if (bSavedIsMantling)     Result |= FLAG_Custom_3;
+
+    return Result;
+}
+
+bool FSavedMove_Crux::CanCombineWith(const FSavedMovePtr& NewMove, ACharacter* InCharacter, float MaxDelta) const
+{
+    const FSavedMove_Crux* NewCruxMove = static_cast<const FSavedMove_Crux*>(NewMove.Get());
+    if (bSavedIsSliding != NewCruxMove->bSavedIsSliding ||
+        bSavedIsWallRunning != NewCruxMove->bSavedIsWallRunning ||
+        bSavedWingsuitActive != NewCruxMove->bSavedWingsuitActive ||
+        bSavedIsMantling != NewCruxMove->bSavedIsMantling ||
+        SavedCustomMovementMode != NewCruxMove->SavedCustomMovementMode)
+    {
+        return false;
+    }
+
+    return Super::CanCombineWith(NewMove, InCharacter, MaxDelta);
+}
+
+void FSavedMove_Crux::SetMoveFor(ACharacter* Character, float InDeltaTime, FVector const& NewAccel, FNetworkPredictionData_Client_Character& ClientData)
+{
+    Super::SetMoveFor(Character, InDeltaTime, NewAccel, ClientData);
+
+    if (const UCruxCharacterMovementComponent* CruxMove = Cast<UCruxCharacterMovementComponent>(Character->GetCharacterMovement()))
+    {
+        bSavedIsSliding = CruxMove->bIsSliding;
+        bSavedIsWallRunning = CruxMove->bIsWallRunning;
+        bSavedWingsuitActive = CruxMove->bWingsuitActive;
+        bSavedIsMantling = CruxMove->bIsMantling;
+        SavedCustomMovementMode = CruxMove->CustomMovementMode;
+    }
+}
+
+void FSavedMove_Crux::PrepMoveFor(ACharacter* Character)
+{
+    Super::PrepMoveFor(Character);
+
+    if (UCruxCharacterMovementComponent* CruxMove = Cast<UCruxCharacterMovementComponent>(Character->GetCharacterMovement()))
+    {
+        CruxMove->bIsSliding = bSavedIsSliding;
+        CruxMove->bIsWallRunning = bSavedIsWallRunning;
+        CruxMove->bWingsuitActive = bSavedWingsuitActive;
+        CruxMove->bIsMantling = bSavedIsMantling;
+    }
+}
+
+FNetworkPredictionData_Client_Crux::FNetworkPredictionData_Client_Crux(const UCharacterMovementComponent& ClientMovement)
+    : Super(ClientMovement)
+{
+}
+
+FSavedMovePtr FNetworkPredictionData_Client_Crux::AllocateNewMove()
+{
+    return FSavedMovePtr(new FSavedMove_Crux());
 }
