@@ -1,4 +1,4 @@
-So far, this repo includes Pipeline A and all versions of the GDD(vo.1-v0.3)
+So far, this repo includes Pipeline A and all versions of the GDD(vo.1-v0.3), plus baselines for movement and weapons, which will need playtesting and additions
 
 
 
