@@ -1,4 +1,5 @@
 #include "CruxBow.h"
+#include "CruxProjectile.h"
 #include "CruxCharacterMovementComponent.h"
 #include "GameFramework/Character.h"
 #include "TimerManager.h"
@@ -281,32 +282,32 @@ void ACruxBow::FireBurst()
 
 void ACruxBow::FireProjectile(const FVector& Direction) const
 {
-    // ── TODO: Spawn ACruxProjectile ───────────────────────────────────────────
-    // Replace this stub with a proper projectile spawn once ACruxProjectile exists.
-    // Pattern:
-    //
-    //   FActorSpawnParameters SpawnParams;
-    //   SpawnParams.Owner   = OwnerCharacter;
-    //   SpawnParams.Instigator = OwnerCharacter->GetInstigator();
-    //
-    //   ACruxProjectile* Proj = GetWorld()->SpawnActor<ACruxProjectile>(
-    //       ProjectileClass,
-    //       OwnerCharacter->GetPawnViewLocation(),
-    //       Direction.Rotation(),
-    //       SpawnParams);
-    //
-    //   if (Proj)
-    //   {
-    //       Proj->SetOwningWeapon(this); // So OnHit can call back into OnFlowHook
-    //       Proj->SetVelocity(Direction * ProjectileSpeed);
-    //   }
-    //
-    // For the immediate prototype, draw a debug line representing the projectile path:
-    DrawDebugLine(
-        GetWorld(),
-        OwnerCharacter->GetPawnViewLocation(),
-        OwnerCharacter->GetPawnViewLocation() + Direction * 2000.f,
-        FColor::Cyan, false, 0.5f, 0, 1.f);
+    if (!OwnerCharacter || !GetWorld()) return;
+
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.Owner      = OwnerCharacter;
+    SpawnParams.Instigator = OwnerCharacter->GetInstigator();
+    // AlwaysSpawn: don't abort if the muzzle clips geometry at spawn
+    SpawnParams.SpawnCollisionHandlingOverride =
+        ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+    const FVector SpawnLoc = OwnerCharacter->GetPawnViewLocation();
+
+    ACruxProjectile* Proj = GetWorld()->SpawnActor<ACruxProjectile>(
+        ACruxProjectile::StaticClass(),
+        SpawnLoc,
+        Direction.Rotation(),
+        SpawnParams);
+
+    if (Proj)
+    {
+        // Wire the bow back-reference so the projectile can call OnFlowHook on hit
+        Proj->SetOwningBow(const_cast<ACruxBow*>(this));
+        // Set per-projectile direction (applies the spread-cone offset)
+        Proj->SetVelocityDirection(Direction);
+        // Forward per-projectile damage from this weapon's PrimaryDamage
+        Proj->HitDamage = PrimaryDamage;
+    }
 }
 
 void ACruxBow::EndDrawState()
