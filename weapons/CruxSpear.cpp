@@ -10,14 +10,20 @@
 
 ACruxSpear::ACruxSpear()
 {
-    PrimaryActorTick.bCanEverTick = true;
-    WeaponSlot       = EWeaponSlot::Slot2_Bridger;
-    PrimaryDamage    = 22.f;
-    SecondaryDamage  = 10.f; // Lunge is about distance, not burst damage
-    FlowHookDamage   = 0.f;  // Wall-kick is a movement event, not a damage event
-    MeleeTraceLength = 160.f; // Longer reach than Sword
-    MeleeTraceRadius = 6.f;   // Narrow line — precision required
+    PrimaryActorTick.bCanEverTick = true; // Needed for ThrustCDTimer countdown
+
+    // Identity
+    WeaponSlot        = EWeaponSlot::Slot2_Bridger;
     WeaponDisplayName = FText::FromString(TEXT("Spear"));
+
+    // Damage
+    PrimaryDamage   = 22.f;
+    SecondaryDamage = 10.f; // Lunge is about distance management, not burst damage
+    FlowHookDamage  = 0.f;  // Wall-kick is a movement event, not a damage event
+
+    // Melee trace — long reach, narrow sphere (precision matters)
+    MeleeTraceLength = 160.f;
+    MeleeTraceRadius = 6.f;
 }
 
 void ACruxSpear::BeginPlay()
@@ -38,27 +44,32 @@ void ACruxSpear::Tick(float DeltaTime)
 //
 //  Narrow hitbox, long reach. No movement manipulation. The Spear's primary
 //  is a pure damage tool — sustained poke from outside melee range.
-//  The line trace means the player must aim more carefully than the Sword.
+//  The narrow trace means the player must aim more carefully than the Sword.
+//
+//  Primary fire does NOT trigger the wall-kick Flow Hook. That's reserved for
+//  lunge misses — so hitting geometry on a primary doesn't accidentally waste
+//  the Flow Hook's repositioning value.
 //
 // ============================================================================
 
 void ACruxSpear::PrimaryFire()
 {
-    Super::PrimaryFire();
-    if (ThrustCDTimer > 0.f) return;
+    Super::PrimaryFire(); // Guard
 
+    if (ThrustCDTimer > 0.f) return;
     ThrustCDTimer = ThrustCooldown;
 
     FHitResult Hit;
-    if (MeleeSweep(Hit)) // Uses the narrow MeleeTraceRadius = 6
+    if (MeleeSweep(Hit))
     {
         ApplyWeaponDamage(Hit.GetActor(), PrimaryDamage, Hit);
 
-        // Classify and trigger Flow Hook.
-        // For primary fire: enemy hits deal damage (above), surface hits do nothing
-        // on primary — the wall-kick is reserved for the lunge's miss case.
+        // Only enemy hits get a Flow Hook call on primary (and there's no effect
+        // defined for enemy hits — this is a hook point for future design).
+        // Surface hits on primary are intentionally ignored.
         const EFlowHookTarget Target = ClassifyHit(Hit);
-        OnFlowHook(Hit, Target);
+        if (Target == EFlowHookTarget::Enemy)
+            OnFlowHook(Hit, Target);
     }
 }
 
@@ -66,59 +77,56 @@ void ACruxSpear::PrimaryFire()
 //  SECONDARY FIRE — XL lunge (Micro-Charge, fully committed)
 // ============================================================================
 //
-//  The lunge is the Spear's signature. Unlike the Sword's lunge which deals
-//  damage mid-flight, the Spear lunge is pure movement — you commit to a
-//  direction, travel the full distance, and either arrive at your target or
-//  sail past them.
+//  The Spear lunge is pure movement — commit to a direction, travel the full
+//  distance. Unlike the Sword's lunge (which deals damage mid-flight), the
+//  Spear lunge's damage comes from a hit-trace at the moment of firing.
 //
-//  At the END of the lunge (or whenever the trace finds a surface), the wall-
-//  kick Flow Hook fires. If you aimed at an enemy and hit them — great, damage.
-//  If you aimed at a wall — the wall-kick redirects you at high speed.
-//  If you aimed at nothing — you land with all that speed intact.
+//  Three outcomes after the lunge fires:
+//    Hit enemy  → damage + no movement bonus (value was reaching the target)
+//    Hit surface → wall-kick Flow Hook (miss turned into reposition)
+//    Hit nothing → full speed intact, you land wherever your lunge took you
 //
 // ============================================================================
 
 void ACruxSpear::SecondaryFire(bool bHeld)
 {
-    Super::SecondaryFire(bHeld);
+    Super::SecondaryFire(bHeld); // Guard
 
-    // CMC fires the base impulse and handles cooldown
     CruxMovement->FireMicroCharge(bHeld);
 
+    // Spear's XL impulse is 1.2× the CMC's base held magnitude
     const float ImpulseStrength = bHeld
-        ? CruxMovement->MicroChargeHeldImpulse * 1.2f // XL — slightly larger than Sword
+        ? CruxMovement->MicroChargeHeldImpulse * 1.2f
         : CruxMovement->MicroChargeTapImpulse;
 
     const FVector LungeDir = GetOwnerForward();
 
-    // ── Replace velocity entirely — committed linear momentum ──────────────────
-    // "Entirely committed linear momentum — you fly straight."
-    // Z is zeroed on held lunge so there's no arc. On tap, preserve Z for
-    // natural gravity interaction mid-air.
-    FVector NewVelocity    = FVector::ZeroVector;
-    NewVelocity           += LungeDir * ImpulseStrength;
+    // Replace velocity entirely — "committed linear momentum, you fly straight."
+    // Z is zeroed on held lunge for flat trajectory. Preserved on tap so
+    // gravity interacts naturally mid-air.
+    FVector NewVelocity  = FVector::ZeroVector;
+    NewVelocity         += LungeDir * ImpulseStrength;
     if (!bHeld) NewVelocity.Z = GetOwnerVelocity().Z;
 
     CruxMovement->Velocity = NewVelocity;
 
-    // ── Lock trajectory for held lunge ────────────────────────────────────────
+    // ── Held: lock trajectory (no steering, near-zero gravity) ────────────────
     if (bHeld && !bLungeLockActive)
     {
         bLungeLockActive = true;
-        CruxMovement->GravityScale = 0.05f; // Nearly no drop during rail lunge
+        CruxMovement->GravityScale = 0.05f; // Nearly no arc during rail lunge
         CruxMovement->AirControl   = 0.f;
 
         GetWorldTimerManager().SetTimer(
             LungeLockTimerHandle,
             this, &ACruxSpear::EndLungeLock,
             LungeLockDuration,
-            false);
+            /*bLoop=*/false);
     }
 
-    // ── Trace along lunge path for hit resolution ─────────────────────────────
-    // Use a longer trace matching the lunge distance.
-    // Check for BOTH pawn and world static hits — we need to know if we
-    // hit a surface (wall-kick) or an enemy.
+    // ── Hit-resolution trace along the lunge path ─────────────────────────────
+    // Multi-channel sweep catches both pawns AND world geometry in one pass,
+    // so we know immediately whether to deal damage or trigger the wall-kick.
     FHitResult LungeHit;
     const FVector EyeLoc   = OwnerCharacter->GetPawnViewLocation();
     const FVector TraceEnd = EyeLoc + LungeDir * LungeTraceLength;
@@ -127,8 +135,7 @@ void ACruxSpear::SecondaryFire(bool bHeld)
     Params.AddIgnoredActor(OwnerCharacter);
     Params.AddIgnoredActor(this);
 
-    // Multi-channel sweep: catches pawns AND world geometry in one pass
-    bool bHitSomething = GetWorld()->SweepSingleByObjectType(
+    const bool bHitSomething = GetWorld()->SweepSingleByObjectType(
         LungeHit,
         EyeLoc,
         TraceEnd,
@@ -151,61 +158,43 @@ void ACruxSpear::SecondaryFire(bool bHeld)
 //  FLOW HOOK — Wall-kick on surface hit
 // ============================================================================
 //
-//  This is the Spear's signature movement payoff.
+//  Physics reflection off the wall normal:
+//    1. Get incoming velocity (the lunge velocity at moment of impact)
+//    2. Reflect off HitResult.Normal using V' = V - 2(V·N)N
+//    3. Scale by WallKickMultiplier (exit faster than entry)
+//    4. Enforce WallKickMinSpeed floor (even slow approaches yield useful kicks)
+//    5. Apply with bAdditive=false (wall-kick IS the new trajectory)
 //
-//  On a SURFACE hit, we perform a physics reflection:
-//    1. Get the incoming velocity (the lunge velocity)
-//    2. Reflect it off the wall's normal vector
-//    3. Scale up by WallKickMultiplier
-//    4. Enforce a minimum speed floor (WallKickMinSpeed)
-//    5. Apply via LaunchCharacter with override = true (replaces velocity)
-//
-//  The reflected vector naturally carries the "sharp angle" feel — if you
-//  run perpendicular into a wall, you bounce straight back. If you hit at 45°,
-//  you bounce at 45° to the other side. Physics handles the geometry.
-//
-//  On an ENEMY hit during primary fire: no special movement. On an ENEMY hit
-//  during a lunge, no wall-kick either — the value was reaching the target.
+//  Hitting perpendicular → bounce straight back.
+//  Hitting at 45° → bounce at 45° to the other side.
+//  Physics handles the geometry — no special-case angles needed.
 //
 // ============================================================================
 
 void ACruxSpear::OnFlowHook(const FHitResult& HitResult, EFlowHookTarget Target)
 {
-    Super::OnFlowHook(HitResult, Target);
+    Super::OnFlowHook(HitResult, Target); // Guard
 
-    // Wall-kick only fires on surface hits
+    // Wall-kick only fires on surface hits — enemy hits have no movement payoff
     if (Target != EFlowHookTarget::Surface) return;
 
-    const FVector WallNormal    = HitResult.Normal;
-    const FVector IncomingVel   = GetOwnerVelocity();
+    const FVector WallNormal  = HitResult.Normal;
+    const FVector IncomingVel = GetOwnerVelocity();
 
-    // ── Reflect velocity off the wall normal ──────────────────────────────────
-    //
-    //  FVector::MirrorByVector reflects IncomingVel across WallNormal.
-    //  This is: V' = V - 2(V·N)N — standard specular reflection formula.
-    //  Result: the player bounces off the wall at the mirror angle of approach.
-    //
-    const FVector ReflectedVel  = IncomingVel.MirrorByVector(WallNormal);
+    // Standard specular reflection: V' = V - 2(V·N)N
+    const FVector ReflectedVel = IncomingVel.MirrorByVector(WallNormal);
 
-    // ── Scale the kick ────────────────────────────────────────────────────────
+    // Scale the kick — exit faster than entry speed
     FVector KickVelocity = ReflectedVel * WallKickMultiplier;
 
-    // ── Enforce minimum speed ─────────────────────────────────────────────────
-    // If the incoming velocity was small (player nearly stopped at the wall),
-    // the reflection would be tiny. Enforce a floor so the kick is always useful.
-    const float CurrentKickSpeed = KickVelocity.SizeSquared();
-    const float MinSpeedSq       = FMath::Square(WallKickMinSpeed);
-    if (CurrentKickSpeed < MinSpeedSq)
-    {
+    // Enforce minimum speed floor so slow approaches still produce a useful kick
+    if (KickVelocity.SizeSquared() < FMath::Square(WallKickMinSpeed))
         KickVelocity = KickVelocity.GetSafeNormal() * WallKickMinSpeed;
-    }
 
-    // ── Apply the wall-kick ───────────────────────────────────────────────────
-    // LaunchOwner with bAdditive=false replaces velocity entirely.
-    // This is intentional — the wall-kick IS the new trajectory.
+    // Replace velocity entirely — the wall-kick IS the new trajectory
     LaunchOwner(KickVelocity, /*bAdditive=*/false);
 
-    // End any active lunge lock — the wall-kick unlocks steering
+    // End any active lunge lock — the wall-kick restores player steering
     if (bLungeLockActive)
     {
         bLungeLockActive = false;
@@ -221,6 +210,7 @@ void ACruxSpear::OnFlowHook(const FHitResult& HitResult, EFlowHookTarget Target)
 void ACruxSpear::EndLungeLock()
 {
     bLungeLockActive = false;
+    // Restore CMC defaults — match the CMC constructor values
     CruxMovement->GravityScale = 1.4f;
     CruxMovement->AirControl   = 0.6f;
 }
