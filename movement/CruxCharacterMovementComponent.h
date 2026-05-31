@@ -42,7 +42,6 @@ enum ECustomMovementMode
     CMOVE_Slide      UMETA(DisplayName = "Slide"),
     CMOVE_WallRun    UMETA(DisplayName = "WallRun"),
     CMOVE_Wingsuit   UMETA(DisplayName = "Wingsuit"),
-    CMOVE_Mantle     UMETA(DisplayName = "Mantle"),
     CMOVE_MAX        UMETA(Hidden),
 };
 
@@ -50,8 +49,6 @@ UCLASS()
 class CRUX_API UCruxCharacterMovementComponent : public UCharacterMovementComponent
 {
     GENERATED_BODY()
-
-    friend class FSavedMove_Crux;
 
 public:
     UCruxCharacterMovementComponent();
@@ -80,14 +77,6 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crux|Slide")
     float SlideEnterSpeed = 10.f;
 
-    /** How far below the capsule to trace for slide floor detection (UU) */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Crux|Slide")
-    float SlideFloorTraceLength = 20.f;
-
-    /** Maximum speed allowed while sliding (UU/s) */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Crux|Slide")
-    float MaxSlideSpeed = 1600.f;
-
     // -------------------------------------------------------------------------
     // WALL-RUN PARAMETERS
     // -------------------------------------------------------------------------
@@ -107,14 +96,6 @@ public:
     /** How fast gravity pulls you off the wall (lower = stick longer) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crux|WallRun")
     float WallRunGravityScale = 0.25f;
-
-    /** Maximum absolute UpVector dot for a wall-run surface to count as vertical */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Crux|WallRun")
-    float WallRunMaxFloorAngleDot = 0.3f;
-
-    /** Maximum speed allowed while wall-running (UU/s) */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Crux|WallRun")
-    float MaxWallRunSpeed = 1200.f;
 
     /**
      * Surface friction override for wall-run.
@@ -161,10 +142,6 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crux|MicroCharge")
     float MicroChargeCooldown = 1.2f;
 
-    /** How long a held micro-charge disables air steering (seconds) */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Crux|MicroCharge")
-    float MicroChargeAirControlLockDuration = 0.4f;
-
     // -------------------------------------------------------------------------
     // WINGSUIT PARAMETERS
     // -------------------------------------------------------------------------
@@ -181,10 +158,6 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crux|Wingsuit")
     float WingsuitDrag = 0.05f;
 
-    /** Fraction of downward velocity converted into forward wingsuit momentum */
-    UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Crux|Wingsuit")
-    float WingsuitDiveTransferRate = 0.4f;
-
     // -------------------------------------------------------------------------
     // DASH RESET
     // -------------------------------------------------------------------------
@@ -192,6 +165,22 @@ public:
     /** Whether the dash is currently available (reset on specific landings) */
     UPROPERTY(BlueprintReadOnly, Category = "Crux|DashReset")
     bool bDashAvailable = true;
+
+    // -------------------------------------------------------------------------
+    // READABLE STATE — queried by the Character for input routing
+    // -------------------------------------------------------------------------
+
+    /** True while the player is in CMOVE_Slide. Read by the Character for SlideHop. */
+    UPROPERTY(BlueprintReadOnly, Category = "Crux|State")
+    bool bIsSliding = false;
+
+    /** True while the player is in CMOVE_WallRun. Read by the Character for WallJump. */
+    UPROPERTY(BlueprintReadOnly, Category = "Crux|State")
+    bool bIsWallRunning = false;
+
+    /** True while wingsuit is active. */
+    UPROPERTY(BlueprintReadOnly, Category = "Crux|State")
+    bool bWingsuitActive = false;
 
     // -------------------------------------------------------------------------
     // PUBLIC API — called by the Character or AbilitySystem
@@ -246,24 +235,17 @@ public:
     virtual void OnMovementModeChanged(EMovementMode PreviousMovementMode,
         uint8 PreviousCustomMode) override;
     virtual float GetMaxSpeed() const override;
-    virtual void UpdateFromCompressedFlags(uint8 Flags) override;
-    virtual class FNetworkPredictionData_Client* GetPredictionData_Client() const override;
 
 protected:
     // -------------------------------------------------------------------------
     // INTERNAL STATE
     // -------------------------------------------------------------------------
 
-    bool bIsSliding      = false;
-    bool bIsWallRunning  = false;
-    bool bWingsuitActive = false;
     bool bIsMantling     = false;
 
     FVector WallRunNormal     = FVector::ZeroVector; // Normal of the wall we're running on
     FVector MantleTarget      = FVector::ZeroVector; // World position we're lerping to
     float   MicroChargeCDTimer = 0.f;                // Countdown to next available charge
-    float   AirControlBeforeMicroCharge = 0.f;       // AirControl value restored when held charge unlocks
-    FTimerHandle MicroChargeTimerHandle;             // Tracked handle so delayed resets can be cancelled safely
 
     // -------------------------------------------------------------------------
     // PHYSICS IMPLEMENTATIONS
@@ -288,44 +270,11 @@ protected:
         bool bFluid, float BrakingDeceleration) override;
     virtual void ProcessLanded(const FHitResult& Hit, float remainingTime,
         int32 Iterations) override;
-    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
     /** Shared helper: set our custom movement mode cleanly */
     void SetCustomMode(ECustomMovementMode NewMode);
 
-    /** Safely restore AirControl after a held micro-charge timer expires. */
-    UFUNCTION()
-    void ResetAirControl();
-
     /** Check if we should exit the wall-run (wall gone, too slow, etc.) */
     bool ShouldExitWallRun() const;
-};
-
-class FSavedMove_Crux : public FSavedMove_Character
-{
-public:
-    typedef FSavedMove_Character Super;
-
-    uint8 bSavedIsSliding : 1;
-    uint8 bSavedIsWallRunning : 1;
-    uint8 bSavedWingsuitActive : 1;
-    uint8 bSavedIsMantling : 1;
-    uint8 SavedCustomMovementMode;
-
-    FSavedMove_Crux();
-
-    virtual void Clear() override;
-    virtual uint8 GetCompressedFlags() const override;
-    virtual bool CanCombineWith(const FSavedMovePtr& NewMove, ACharacter* InCharacter, float MaxDelta) const override;
-    virtual void SetMoveFor(ACharacter* Character, float InDeltaTime, FVector const& NewAccel, FNetworkPredictionData_Client_Character& ClientData) override;
-    virtual void PrepMoveFor(ACharacter* Character) override;
-};
-
-class FNetworkPredictionData_Client_Crux : public FNetworkPredictionData_Client_Character
-{
-public:
-    FNetworkPredictionData_Client_Crux(const UCharacterMovementComponent& ClientMovement);
-
-    virtual FSavedMovePtr AllocateNewMove() override;
 };
