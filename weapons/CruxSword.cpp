@@ -10,14 +10,20 @@
 
 ACruxSword::ACruxSword()
 {
-    PrimaryActorTick.bCanEverTick = true; // Needed for slash cooldown countdown
-    WeaponSlot    = EWeaponSlot::Slot2_Bridger;
-    PrimaryDamage = 25.f;
-    SecondaryDamage = 15.f; // The lunge's value is speed, not damage
-    FlowHookDamage  = 35.f;
-    MeleeTraceLength = 100.f;
-    MeleeTraceRadius = 14.f; // Generous width — slash should feel reliable
+    PrimaryActorTick.bCanEverTick = true; // Needed for PrimarySlashCDTimer countdown
+
+    // Identity
+    WeaponSlot        = EWeaponSlot::Slot2_Bridger;
     WeaponDisplayName = FText::FromString(TEXT("Sword"));
+
+    // Damage
+    PrimaryDamage   = 25.f;
+    SecondaryDamage = 15.f; // The lunge's value is speed, not burst damage
+    FlowHookDamage  = 35.f;
+
+    // Melee trace — generous sphere for reliable, forgiving slashes
+    MeleeTraceLength = 100.f;
+    MeleeTraceRadius = 14.f;
 }
 
 void ACruxSword::BeginPlay()
@@ -36,34 +42,29 @@ void ACruxSword::Tick(float DeltaTime)
 //  PRIMARY FIRE — Fast horizontal slash
 // ============================================================================
 //
-//  Design intent: accessible, fast, low commitment. A new player spamming Left
-//  Click should deal relevant damage and feel responsive. The tiny forward push
-//  keeps them moving without disrupting momentum.
+//  Design intent: accessible, fast, low commitment. A new player spamming LMB
+//  should deal relevant damage and feel responsive. The tiny forward push keeps
+//  them moving without disrupting momentum — the Sword never fights the player.
 //
 // ============================================================================
 
 void ACruxSword::PrimaryFire()
 {
-    Super::PrimaryFire(); // Guard checks
+    Super::PrimaryFire(); // Guard: bIsEquipped, owner valid
 
-    if (PrimarySlashCDTimer > 0.f) return; // Respect slash rate
-
+    if (PrimarySlashCDTimer > 0.f) return;
     PrimarySlashCDTimer = PrimarySlashCooldown;
 
     FHitResult Hit;
     if (MeleeSweep(Hit))
     {
-        // Deal damage
         ApplyWeaponDamage(Hit.GetActor(), PrimaryDamage, Hit);
 
-        // Tiny forward push — does NOT zero velocity, just nudges.
-        // Keeps the "movement stays consistent" feel of the Sword.
-        const FVector MicroPush = GetOwnerForward() * 80.f;
-        LaunchOwner(MicroPush, /*bAdditive=*/true);
+        // Tiny additive forward push — nudges momentum without overwriting it.
+        // Keeps the "movement is consistent" feel that makes the Sword beginner-friendly.
+        LaunchOwner(GetOwnerForward() * 80.f, /*bAdditive=*/true);
 
-        // Trigger Flow Hook
-        const EFlowHookTarget Target = ClassifyHit(Hit);
-        OnFlowHook(Hit, Target);
+        OnFlowHook(Hit, ClassifyHit(Hit));
     }
 }
 
@@ -71,54 +72,47 @@ void ACruxSword::PrimaryFire()
 //  SECONDARY FIRE — Launch-slash (Micro-Charge)
 // ============================================================================
 //
-//  This is the weapon-shaped version of the CMC's FireMicroCharge().
-//  The CMC handles cooldown tracking; we shape the impulse and lock trajectory.
+//  TAP:  Fast gap-close. Additive — preserves existing momentum. Air-steering
+//        still works. Good for chasing targets mid-combo.
+//  HOLD: Full commitment. Trajectory locked for LungeLockDuration. Gravity
+//        suppressed so the character flies level. Deals damage to the first
+//        enemy in the trajectory at the moment of SecondaryFire.
 //
-//  TAP:  600-700 UU/s forward. Quick gap-close. Air-steering still works.
-//  HOLD: 1200-1400 UU/s forward. Full commitment. Trajectory locked for
-//        LungeLockDuration seconds — player flies straight, no steering.
-//
-//  The lunge's gravity scale is nearly zero so the character doesn't arc
-//  downward during the lunge window. Feels like a horizontal rocket.
+//  Impulse magnitudes come from the CMC's UPROPERTY values so they can be
+//  tweaked in one place and flow through to all weapons.
 //
 // ============================================================================
 
 void ACruxSword::SecondaryFire(bool bHeld)
 {
-    Super::SecondaryFire(bHeld);
+    Super::SecondaryFire(bHeld); // Guard
 
-    // Ask the CMC to fire its impulse. This handles cooldown checks and
-    // the tap/held impulse magnitudes defined in the CMC's UPROPERTY values.
+    // CMC handles the cooldown gate and applies its own LaunchCharacter impulse.
+    // We then overwrite velocity directly for precise shaping below.
     CruxMovement->FireMicroCharge(bHeld);
 
-    // ── Shape the lunge ──────────────────────────────────────────────────────
-    const float ImpulseStrength = bHeld
+    const float   ImpulseStrength = bHeld
         ? CruxMovement->MicroChargeHeldImpulse
         : CruxMovement->MicroChargeTapImpulse;
-
     const FVector LungeDir    = GetOwnerForward();
     const FVector LungeImpulse = LungeDir * ImpulseStrength;
 
-    // Redirect velocity entirely into the forward lunge.
-    // We replace XY and keep Z so jumps during a tap feel natural.
-    FVector NewVelocity        = GetOwnerVelocity();
-    NewVelocity.X              = LungeImpulse.X;
-    NewVelocity.Y              = LungeImpulse.Y;
-    // Z: keep existing Z for tap (gravity handles it), suppress for held lunge
-    if (bHeld) NewVelocity.Z   = 0.f;
+    // Replace XY with lunge velocity. Keep Z for tap (gravity handles arc),
+    // suppress Z for held (player flies perfectly level).
+    FVector NewVelocity = GetOwnerVelocity();
+    NewVelocity.X = LungeImpulse.X;
+    NewVelocity.Y = LungeImpulse.Y;
+    if (bHeld) NewVelocity.Z = 0.f;
 
     CruxMovement->Velocity = NewVelocity;
 
-    // ── Held: lock trajectory ─────────────────────────────────────────────────
+    // ── Held: lock trajectory ──────────────────────────────────────────────────
     if (bHeld && !bLungeLockActive)
     {
         bLungeLockActive = true;
 
-        // Suppress gravity during the lunge so the character flies level
-        CruxMovement->GravityScale = LungeGravityScale;
-
-        // Lock air control to zero — player cannot steer during committed lunge
-        CruxMovement->AirControl = 0.f;
+        CruxMovement->GravityScale = LungeGravityScale; // Near-zero — fly level
+        CruxMovement->AirControl   = 0.f;               // No steering
 
         GetWorldTimerManager().SetTimer(
             LungeLockTimerHandle,
@@ -127,11 +121,11 @@ void ACruxSword::SecondaryFire(bool bHeld)
             /*bLoop=*/false);
     }
 
-    // ── Melee check during lunge ──────────────────────────────────────────────
-    // Immediately check for a hit along the lunge path. This lets the slash
-    // deal damage to the first enemy in the trajectory.
+    // ── Hit check along lunge path ─────────────────────────────────────────────
+    // The slash deals damage to the first enemy in the trajectory immediately.
+    // A slightly longer trace is used for the lunge to match the distance covered.
     FHitResult LungeHit;
-    if (MeleeSweep(LungeHit, MeleeTraceLength * 1.5f)) // Slightly longer for lunge
+    if (MeleeSweep(LungeHit, MeleeTraceLength * 1.5f))
     {
         ApplyWeaponDamage(LungeHit.GetActor(), SecondaryDamage, LungeHit);
         OnFlowHook(LungeHit, ClassifyHit(LungeHit));
@@ -142,47 +136,36 @@ void ACruxSword::SecondaryFire(bool bHeld)
 //  FLOW HOOK — Zero-gravity window on any successful hit
 // ============================================================================
 //
-//  The Sword's identity: every hit is a movement opportunity.
+//  Every hit (enemy OR surface) is a movement opportunity. Gravity is zeroed
+//  for SwordFlowHookDuration seconds — during this window the player floats
+//  and can:
+//    - Chain another micro-charge (cooldown is also reset here)
+//    - Run into a wall to start a wall-run without losing height
+//    - Jump cleanly from the float without fighting gravity
 //
-//  On a successful hit (enemy OR surface), gravity is zeroed for
-//  SwordFlowHookDuration seconds. During this window the player floats
-//  in place — they are free to:
-//    - Fire another micro-charge (CMC cooldown is also reset here)
-//    - Turn and run into a wall to start a wall-run
-//    - Jump cleanly without losing height to gravity
-//
-//  This creates the "gravity reset" that the GDD describes as the Sword's
-//  Flow Hook: "resets gravity for a split second, allowing the dash to
-//  chain directly into a wall-run or another weapon's movement without
-//  losing forward speed."
+//  Consecutive hits re-start the window rather than stacking — prevents
+//  indefinite float while still rewarding rapid hit chains.
 //
 // ============================================================================
 
 void ACruxSword::OnFlowHook(const FHitResult& HitResult, EFlowHookTarget Target)
 {
-    Super::OnFlowHook(HitResult, Target);
+    Super::OnFlowHook(HitResult, Target); // Guard
 
     if (Target == EFlowHookTarget::Miss) return;
 
-    // Cancel any existing window before starting a new one (consecutive hits
-    // should extend the float, not stack forever)
+    // Reset any in-progress window so consecutive hits feel seamless
     if (bFlowHookWindowActive)
         GetWorldTimerManager().ClearTimer(FlowHookTimerHandle);
 
     bFlowHookWindowActive = true;
 
-    // ── Zero gravity ──────────────────────────────────────────────────────────
-    // Store the real gravity scale so we can restore it when the window ends.
-    // We write directly to GravityScale — the CMC reads this every tick to
-    // compute the gravitational force applied to Velocity.Z.
+    // Zero gravity — the CMC reads GravityScale every tick
     CruxMovement->GravityScale = 0.f;
 
-    // ── Reset micro-charge cooldown ───────────────────────────────────────────
-    // This is what makes the chained dash possible. The player can immediately
-    // fire another micro-charge after the hit without waiting for cooldown.
+    // Reset micro-charge cooldown — enables the immediate chained dash
     CruxMovement->MicroChargeCDTimer = 0.f;
 
-    // ── Schedule gravity restoration ──────────────────────────────────────────
     GetWorldTimerManager().SetTimer(
         FlowHookTimerHandle,
         this, &ACruxSword::EndFlowHookWindow,
@@ -197,21 +180,17 @@ void ACruxSword::OnFlowHook(const FHitResult& HitResult, EFlowHookTarget Target)
 void ACruxSword::EndLungeLock()
 {
     bLungeLockActive = false;
-
-    // Restore standard gravity and air control
-    // Use the CMC's own default values rather than hardcoding
-    CruxMovement->GravityScale = 1.4f; // Matches CMC constructor
-    CruxMovement->AirControl   = 0.6f; // Matches CMC constructor
+    // Restore CMC defaults. These values match the CMC constructor.
+    CruxMovement->GravityScale = 1.4f;
+    CruxMovement->AirControl   = 0.6f;
 }
 
 void ACruxSword::EndFlowHookWindow()
 {
     bFlowHookWindowActive = false;
 
-    // Restore gravity. If a lunge lock was ALSO active, leave it — EndLungeLock
-    // will restore gravity when the lunge expires. Whichever timer fires last wins.
+    // Restore gravity only if the lunge lock isn't also suppressing it.
+    // Whichever timer fires last wins — no double-restoration needed.
     if (!bLungeLockActive)
-    {
         CruxMovement->GravityScale = 1.4f;
-    }
 }
