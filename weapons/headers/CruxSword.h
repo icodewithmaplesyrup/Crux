@@ -11,9 +11,9 @@
 //    Micro-Charge:
 //      Tap  → Quick forward burst-slash (short range, moderate speed)
 //      Hold → High-speed launch-slash. Commits trajectory, massive speed.
-//    Flow Hook: Hitting ANY target (enemy or physics object) resets gravity
-//               for a split second — allowing a direct chain into wall-run
-//               or another weapon's movement without losing forward speed.
+//    Flow Hook: Hitting ANY target (enemy or geometry) resets gravity for a
+//               split second — allowing a direct chain into wall-run or
+//               another weapon's movement without losing forward speed.
 //
 //  This is the RECOMMENDED STARTING WEAPON — its Flow Hook is the most
 //  forgiving because it triggers on any successful hit, not a positional one.
@@ -27,56 +27,66 @@ public:
     ACruxSword();
 
     virtual void PrimaryFire() override;
-    virtual void ReleaseMicroCharge() override;
-    virtual void TriggerFlowHook(const FCruxFlowHookContext& Context) override;
+    virtual void SecondaryFire(bool bHeld) override;
+    virtual void OnFlowHook(const FHitResult& HitResult, EFlowHookTarget Target) override;
 
 protected:
     // ── Primary Fire Config ───────────────────────────────────────────────────
 
-    // Horizontal damage arc half-angle (degrees). Wide enough to be forgiving.
+    /** Rate limit on primary slashes (seconds between swings). */
     UPROPERTY(EditDefaultsOnly, Category = "Crux|Sword")
-    float SlashArcDegrees = 60.f;
+    float PrimarySlashCooldown = 0.22f;
 
-    UPROPERTY(EditDefaultsOnly, Category = "Crux|Sword")
-    float SlashDamage = 20.f;
+    // ── Lunge / Micro-Charge Config ───────────────────────────────────────────
 
-    // How far the slash reaches
-    UPROPERTY(EditDefaultsOnly, Category = "Crux|Sword")
-    float SlashRange = 180.f;
-
-    // ── Micro-Charge Config ───────────────────────────────────────────────────
-
-    // Tap: quick burst. Additive — preserves existing momentum.
+    /**
+     * Gravity scale applied during a held lunge so the character flies level.
+     * Near-zero = nearly horizontal flight. Restored by EndLungeLock().
+     */
     UPROPERTY(EditDefaultsOnly, Category = "Crux|Sword|MicroCharge")
-    float TapLaunchImpulse = 900.f;
+    float LungeGravityScale = 0.05f;
 
+    /**
+     * How long (seconds) the trajectory lock lasts on a held lunge.
+     * During this window: AirControl=0, GravityScale=LungeGravityScale.
+     */
     UPROPERTY(EditDefaultsOnly, Category = "Crux|Sword|MicroCharge")
-    float TapSlashDamage = 30.f;
-
-    // Hold: committed launch-slash. Huge speed, locked trajectory.
-    UPROPERTY(EditDefaultsOnly, Category = "Crux|Sword|MicroCharge")
-    float HeldLaunchImpulse = 2400.f;
-
-    UPROPERTY(EditDefaultsOnly, Category = "Crux|Sword|MicroCharge")
-    float HeldSlashDamage = 60.f;
+    float LungeLockDuration = 0.35f;
 
     // ── Flow Hook Config ──────────────────────────────────────────────────────
 
-    // Duration (seconds) of the gravity-zero window after a hit
+    /**
+     * How long (seconds) gravity is zeroed after a successful hit.
+     * During this window: player floats, micro-charge cooldown is reset.
+     */
     UPROPERTY(EditDefaultsOnly, Category = "Crux|Sword|FlowHook")
-    float GravityResetDuration = 0.18f;
-
-    // Saved gravity scale to restore after the window
-    float SavedGravityScale = 1.4f;
-
-    // Timer handle for restoring gravity
-    FTimerHandle GravityRestoreTimer;
+    float SwordFlowHookDuration = 0.18f;
 
 private:
-    // Executes a multi-overlap arc sweep for the slash, damaging everything
-    // in the horizontal cone. Separates geometry hits (Flow Hook eligible)
-    // from pawn hits.
-    void PerformSlashArc(float Damage, float Range);
+    // ── Runtime timers ────────────────────────────────────────────────────────
 
-    void RestoreGravity();
+    /** Counts down from PrimarySlashCooldown each frame. */
+    float PrimarySlashCDTimer = 0.f;
+
+    /** True while the held-lunge trajectory lock is active. */
+    bool bLungeLockActive = false;
+
+    /** True while the Flow Hook gravity-zero window is active. */
+    bool bFlowHookWindowActive = false;
+
+    FTimerHandle LungeLockTimerHandle;
+    FTimerHandle FlowHookTimerHandle;
+
+    // ── Timer callbacks ───────────────────────────────────────────────────────
+
+    /** Restores GravityScale and AirControl after the lunge lock expires. */
+    void EndLungeLock();
+
+    /** Restores GravityScale after the Flow Hook window expires. */
+    void EndFlowHookWindow();
+
+    // ── Tick (needed for PrimarySlashCDTimer countdown) ──────────────────────
+
+    virtual void Tick(float DeltaTime) override;
+    virtual void BeginPlay() override;
 };
