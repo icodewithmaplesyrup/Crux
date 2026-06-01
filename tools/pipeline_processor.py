@@ -6,11 +6,16 @@ import open3d as o3d
 
 # Define your RandLA-Net / Semantic3D class mappings
 # Adjust these lists based on your model's specific training classes
+# Updated mapping inside tools/pipeline_processor.py to match your constants.py
 SEMANTIC_CLASSES = {
-    "Ground": [1, 2, 6],  # Man-made terrain, Natural terrain, Hardscape
-    "Buildings": [5],     # Buildings
-    "Props": [3, 4, 8],   # High/Low vegetation, Cars
-    "Noise": [0, 7]       # Unlabeled, Scanning artifacts (will be discarded)
+    "Ground_Asphalt": [1],        # asphalt (roads) -> smooth slide friction
+    "Ground_Concrete": [0],       # concrete (foundations/paths) -> high slide friction
+    "Ground_Natural": [2, 8],     # grass_vegetation, gravel_dirt -> slows player down
+    "Structures_Concrete": [0],   # walls (concrete can pull double duty)
+    "Props_Wood": [5],            # benches, pallets, crates
+    "Props_Metal": [3, 4],        # beams, railings, litter
+    "Hazards_Water": [6],         # puddles, drains -> triggers splash / slow
+    "Noise": [7, 9]               # glass, unknown -> filter out or ignore for collisions
 }
 
 def process_mesh(pcd, name, output_dir, is_ground=False):
