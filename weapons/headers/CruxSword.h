@@ -1,4 +1,5 @@
 #pragma once
+#include "../../CruxCompatibility.h"
 
 #include "CruxWeaponBase.h"
 #include "CruxSword.generated.h"

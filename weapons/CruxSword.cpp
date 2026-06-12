@@ -1,5 +1,5 @@
-#include "CruxSword.h"
-#include "CruxCharacterMovementComponent.h"
+#include "headers/CruxSword.h"
+#include "../movement/CruxCharacterMovementComponent.h"
 #include "GameFramework/Character.h"
 #include "TimerManager.h"
 #include "Engine/World.h"

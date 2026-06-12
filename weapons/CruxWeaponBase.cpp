@@ -1,5 +1,5 @@
-#include "CruxWeaponBase.h"
-#include "CruxCharacterMovementComponent.h"
+#include "headers/CruxWeaponBase.h"
+#include "../movement/CruxCharacterMovementComponent.h"
 #include "GameFramework/Character.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Kismet/GameplayStatics.h"

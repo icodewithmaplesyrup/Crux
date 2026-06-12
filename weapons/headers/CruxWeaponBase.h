@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "../../CruxCompatibility.h"
 #include "GameFramework/Actor.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "CruxWeaponBase.generated.h"
@@ -107,6 +108,8 @@ public:
     FText GetWeaponDisplayName() const { return WeaponDisplayName; }
 
 protected:
+    virtual void BeginPlay() override;
+
     // ── Identity / Config — set in each subclass constructor ─────────────────
 
     /** Which hotbar slot this weapon occupies. */

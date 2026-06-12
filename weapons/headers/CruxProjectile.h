@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "../../CruxCompatibility.h"
 #include "GameFramework/Actor.h"
 #include "CruxProjectile.generated.h"
 
