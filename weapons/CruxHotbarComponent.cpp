@@ -1,4 +1,4 @@
-#include "CruxHotbarComponent.h"
+#include "headers/CruxHotbarComponent.h"
 #include "GameFramework/Character.h"
 #include "Engine/World.h"
 

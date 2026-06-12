@@ -1,5 +1,5 @@
-#include "CruxProjectile.h"
-#include "CruxBow.h"
+#include "headers/CruxProjectile.h"
+#include "headers/CruxBow.h"
 #include "Components/SphereComponent.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "GameFramework/Character.h"
@@ -17,7 +17,11 @@ ACruxProjectile::ACruxProjectile()
     // Small radius — arrows should feel precise, not like grenades.
     CollisionSphere = CreateDefaultSubobject<USphereComponent>(TEXT("CollisionSphere"));
     CollisionSphere->InitSphereRadius(4.f);
-    CollisionSphere->SetCollisionProfileName(TEXT("Projectile"));
+    // Use built-in collision setup instead of the FPS-template-only
+    // "Projectile" collision profile so this works in a blank project.
+    CollisionSphere->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+    CollisionSphere->SetCollisionObjectType(ECC_WorldDynamic);
+    CollisionSphere->SetCollisionResponseToAllChannels(ECR_Block);
     SetRootComponent(CollisionSphere);
 
     CollisionSphere->OnComponentHit.AddDynamic(this, &ACruxProjectile::OnHit);

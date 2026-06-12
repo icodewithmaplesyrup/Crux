@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "../../CruxCompatibility.h"
 #include "Components/ActorComponent.h"
 #include "CruxWeaponBase.h"
 #include "CruxHotbarComponent.generated.h"

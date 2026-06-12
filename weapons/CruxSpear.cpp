@@ -1,5 +1,5 @@
-#include "CruxSpear.h"
-#include "CruxCharacterMovementComponent.h"
+#include "headers/CruxSpear.h"
+#include "../movement/CruxCharacterMovementComponent.h"
 #include "GameFramework/Character.h"
 #include "TimerManager.h"
 #include "Engine/World.h"

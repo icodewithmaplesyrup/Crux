@@ -1,5 +1,5 @@
-#include "CruxMace.h"
-#include "CruxCharacterMovementComponent.h"
+#include "headers/CruxMace.h"
+#include "../movement/CruxCharacterMovementComponent.h"
 #include "GameFramework/Character.h"
 #include "Components/PrimitiveComponent.h"
 #include "Kismet/GameplayStatics.h"
